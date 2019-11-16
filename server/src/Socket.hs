@@ -124,7 +124,7 @@ runSocketServer secretKey port connString redisConfig = do
   -- workers for refilling chips
   forkBackgroundJobs connString serverStateTVar lobby
   print $ "Socket server listening on " ++ (show port :: String)
-  _ <- forkIO $ WS.runServer "0.0.0.0" port $ application secretKey
+  WS.runServer "0.0.0.0" port $ application secretKey
                                                           connString
                                                           redisConfig
                                                           serverStateTVar
@@ -135,7 +135,6 @@ runSocketServer secretKey port connString redisConfig = do
  -- _ <- forkIO $ delayThenSeatPlayer connString 3000000 serverStateTVar bot5
  -- threadDelay 100000 --delay so bots dont start game until all of them sat down
   --_ <- forkIO $ startBotActionLoops connString serverStateTVar playersToWaitFor botNames
-  return ()
  where
   botNames         = (^. playerName) <$> [bot1, bot2]
   playersToWaitFor = length botNames
@@ -246,7 +245,7 @@ msgInHandler conf@MsgHandlerConfig {..} = do
     Left  err                        -> yield $ ErrMsg err
     Right (NewGameState tableName g) -> do
       liftIO $ async $ toGameInMailbox serverStateTVar tableName g
-      liftIO $ atomically $ updateTable' serverStateTVar tableName g
+      liftIO $ atomically $ updateGameAtTable' serverStateTVar tableName g
       return ()
     Right m -> yield m
 
@@ -292,7 +291,7 @@ filterMsgsForTable tableName =
 application :: BS.ByteString -> ConnectionString -> RedisConfig -> TVar ServerState -> WS.ServerApp
 application secretKey dbConnString redisConfig s pending = do
   conn <- WS.acceptRequest pending
-  WS.forkPingThread conn 30
+  WS.forkPingThread conn 15
   authMsg          <- WS.receiveData conn
   ServerState {..} <- readTVarIO s
   eUsername        <- authClient secretKey

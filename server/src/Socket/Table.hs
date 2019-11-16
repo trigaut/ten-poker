@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Socket.Table where
 import           Control.Concurrent      hiding ( yield )
@@ -80,11 +81,12 @@ import qualified GHC.IO.Exception              as G
 import qualified Network.WebSockets            as WS
 
 import           Pipes.Aeson
-import           Pipes
+import           Pipes hiding (next)
 import           Pipes.Core                     ( push )
 import           Pipes.Concurrent
 import           Pipes.Parse             hiding ( decode
                                                 , encode
+                                                , next
                                                 )
 import qualified Pipes.Prelude                 as P
 import           Poker.Game.Privacy
@@ -130,13 +132,14 @@ gamePipeline connStr s key tableName outMailbox inMailbox = do
   liftIO $ print "EFFECT"
   liftIO $ print "EFFECT"
   fromInput outMailbox
-    >-> broadcast s tableName
     >-> logGame tableName
-    >-> updateTable s tableName
+    >-> broadcast s tableName
+
+    >-> updateGameAtTable s tableName
     >-> writeGameToDB connStr key
    -- >-> pause
    -- >-> timePlayer s tableName
-    >-> progress inMailbox
+    >-> progress s tableName inMailbox
     -- should all be in stm monad not IO
 
 
@@ -213,17 +216,20 @@ pause = do
 -- After each progression the new game state is sent to the table 
 -- mailbox. This sends the new game state through the pipeline that 
 -- the previous game state just went through.
-progress :: Output Game -> Consumer Game IO ()
-progress inMailbox = do
+progress :: TVar ServerState -> TableName -> Output Game -> Consumer Game IO ()
+progress s name inMailbox = do
   g <- await
   liftIO $ print "can progress game in pipe?"
   liftIO $ print $ (canProgressGame g)
-  when (canProgressGame g) (progress' g)
+  
+  when (canProgressGame g) (liftIO $ progress' g)
  where
   progress' game = do
-    gen <- liftIO getStdGen
+    --rand <- liftIO getStdGen
+    mTable <- atomically $ getTable s name
+    let Table{..} = fromMaybe (error $ "couldnt find table " <> (show name)) mTable
     liftIO $ print "PIPE PROGRESSING GAME"
-    runEffect $ yield (progressGame gen game) >-> toOutput inMailbox
+    runEffect $ yield (progressGame randGen game) >-> toOutput inMailbox
 
 
 writeGameToDB :: ConnectionString -> Key TableEntity -> Pipe Game Game IO ()
@@ -303,15 +309,15 @@ getTable s tableName = do
   return $ M.lookup tableName $ unLobby lobby
 
 
-updateTable :: TVar ServerState -> TableName -> Pipe Game Game IO ()
-updateTable serverStateTVar tableName = do
+updateGameAtTable :: TVar ServerState -> TableName -> Pipe Game Game IO ()
+updateGameAtTable serverStateTVar tableName = do
   g <- await
-  liftIO $ async $ atomically $ updateTable' serverStateTVar tableName g
+  liftIO $ async $ atomically $ updateGameAtTable' serverStateTVar tableName g
   yield g
 
 
-updateTable' :: TVar ServerState -> TableName -> Game -> STM ()
-updateTable' serverStateTVar tableName newGame = do
+updateGameAtTable' :: TVar ServerState -> TableName -> Game -> STM ()
+updateGameAtTable' serverStateTVar tableName newGame = do
   ServerState {..} <- readTVar serverStateTVar
   case M.lookup tableName $ unLobby lobby of
     Nothing               -> throwSTM $ TableDoesNotExistInLobby tableName
@@ -320,9 +326,12 @@ updateTable' serverStateTVar tableName newGame = do
       swapTVar serverStateTVar ServerState { lobby = updatedLobby, .. }
       return ()
 
-
+-- for performance we DO NOT actually want to be getting a new random number
+-- on every game update only when a new deal occurs
 updateTableGame :: TableName -> Game -> Lobby -> Lobby
 updateTableGame tableName newGame (Lobby lobby) = Lobby
-  $ M.adjust updateTable tableName lobby
-  where updateTable Table {..} = Table { game = newGame, .. }
+  $ M.adjust updateGameAtTable tableName lobby
+  where 
+    updateGameAtTable Table {..} =
+       Table { game = newGame, randGen = (snd $ next randGen), .. }
 

@@ -31,7 +31,7 @@ import           Types                          ( RedisConfig
                                                 )
 
 import           Pipes.Concurrent
-
+import System.Random
 
 
 data MsgHandlerConfig = MsgHandlerConfig
@@ -76,6 +76,7 @@ data Table = Table
   , waitlist :: [Username] -- waiting to join a full table
   , game :: Game
   , channel :: TChan MsgOut
+  , randGen :: StdGen
   }
 
 

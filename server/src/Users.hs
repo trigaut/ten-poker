@@ -143,3 +143,7 @@ registerUserHandler jwtSettings connString redisConfig Register {..} = do
   case registrationResult of
     Left err -> throwError $ err401 { errBody = CL.pack $ T.unpack err }
     _        -> signToken jwtSettings newUsername
+
+
+getLobby :: JWTSettings -> ConnectionString -> RedisConfig -> Handler NoContent
+getLobby _ _ _ = return NoContent

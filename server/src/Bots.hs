@@ -146,7 +146,7 @@ runBotAction dbConn serverStateTVar g pName = do
         Left  gameErr -> print (show $ GameErr gameErr) >> return ()
         Right g       -> do
           liftIO $ async $ toGameInMailbox serverStateTVar tableName g
-          liftIO $ atomically $ updateTable' serverStateTVar tableName g
+          liftIO $ atomically $ updateGameAtTable' serverStateTVar tableName g
  where
   tableName  = "Black"
   chipsToSit = 2000
@@ -164,7 +164,7 @@ sitDownBot dbConn player@Player {..} serverStateTVar = do
         Right g       -> do
           dbDepositChipsIntoPlay dbConn _playerName chipsToSit
           liftIO $ async $ toGameInMailbox serverStateTVar tableName g
-          liftIO $ atomically $ updateTable' serverStateTVar tableName g
+          liftIO $ atomically $ updateGameAtTable' serverStateTVar tableName g
  where
   chipsToSit     = 2000
   tableName      = "Black"

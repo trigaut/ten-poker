@@ -53,7 +53,8 @@ type API auths =
 type UnprotectedUsersAPI = 
        "login" :> ReqBody '[ JSON] Login :> Post '[ JSON] ReturnToken      
   :<|> "register" :> ReqBody '[ JSON] Register :> Post '[ JSON] ReturnToken
-    
+  :<|> "lobby" :> Get '[ JSON] NoContent
+
 type ProtectedUsersAPI =
   "profile" :> Get '[ JSON] UserProfile   
 
@@ -112,7 +113,8 @@ server j c r = protectedUsersServer j c r :<|> unprotectedUsersServer j c r
 unprotectedUsersServer :: JWTSettings -> ConnectionString -> RedisConfig -> Server UnprotectedUsersAPI
 unprotectedUsersServer jwtSettings connString redisConfig =
     loginHandler jwtSettings connString :<|>
-    registerUserHandler jwtSettings connString redisConfig
+    registerUserHandler jwtSettings connString redisConfig :<|>
+    getLobby jwtSettings connString redisConfig
 
 protectedUsersServer :: JWTSettings -> ConnectionString -> RedisConfig -> AuthResult Username -> Server ProtectedUsersAPI
 protectedUsersServer j c r (Authenticated username') = fetchUserProfileHandler c username'
@@ -123,5 +125,10 @@ type Middleware = Application -> Application
 addMiddleware :: Application -> Application
 addMiddleware = logStdoutDev . cors (const $ Just policy) . (provideOptions api)
   where
-    corsReqHeaders = ["content-type", "Access-Control-Allow-Origin", "POST", "GET", "*"]
-    policy = simpleCorsResourcePolicy {corsRequestHeaders = corsReqHeaders}
+    corsReqHeaders = ["content-type", "Access-Control-Allow-Origin", "*", "Authorization"]
+    corsMethods = ["GET", "POST", "PATCH", "PUT", "DELETE"]
+    policy      = simpleCorsResourcePolicy { corsRequestHeaders = corsReqHeaders
+                                           , corsMethods        = corsMethods
+                                           }
+
+                        

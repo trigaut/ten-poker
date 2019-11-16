@@ -130,7 +130,7 @@ takeSeatHandler (TakeSeat tableName chipsToSit) = do
                 liftIO
                   $ sendMsg clientConn (SuccessfullySatDown tableName newGame)
                 let msgOut = NewGameState tableName newGame
-                liftIO $ atomically $ updateTable' serverStateTVar
+                liftIO $ atomically $ updateGameAtTable' serverStateTVar
                                                    tableName
                                                    newGame
                 return $ Right msgOut
@@ -171,7 +171,7 @@ leaveSeatHandler leaveSeatMove@(LeaveSeat tableName) = do
                                                    (unUsername username)
                                                    chipsInPlay
                   let msgOut = NewGameState tableName newGame
-                  liftIO $ atomically $ updateTable' serverStateTVar
+                  liftIO $ atomically $ updateGameAtTable' serverStateTVar
                                                      tableName
                                                      newGame
                   return $ Right msgOut
