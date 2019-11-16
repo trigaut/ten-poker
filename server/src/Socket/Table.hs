@@ -130,13 +130,14 @@ gamePipeline connStr s key tableName outMailbox inMailbox = do
   liftIO $ print "EFFECT"
   liftIO $ print "EFFECT"
   fromInput outMailbox
-    >-> broadcast s tableName
     >-> logGame tableName
     >-> updateTable s tableName
     >-> writeGameToDB connStr key
    -- >-> pause
    -- >-> timePlayer s tableName
     >-> progress inMailbox
+    >-> broadcast s tableName
+
     -- should all be in stm monad not IO
 
 

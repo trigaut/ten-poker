@@ -12,7 +12,9 @@ import { newGameState } from '../actions/games'
 
 import * as types from '../actions/types'
 
-const SOCKET_API_URL = process.env.NODE_ENV === 'production' ? 'wss://tengame.co.uk' : 'ws://localhost:5000'
+const SOCKET_API_URL = 'wss://tengame.co.uk' //'ws://localhost:5000'
+
+//process.env.NODE_ENV === 'production' ? 'wss://tengame.co.uk' : 'ws://localhost:5000'
 
 function addHandlers(socket, authToken, dispatch) {
   socket.onopen = event => {
