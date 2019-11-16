@@ -32,10 +32,10 @@ main = do
   secretKey <- getSecretKey
   let runSocketAPI =
         runSocketServer secretKey socketAPIPort dbConnString redisConfig
-  let runUserAPI = run userAPIPort (app secretKey dbConnString redisConfig)
+      runUserAPI = run userAPIPort (app secretKey dbConnString redisConfig)
   migrateDB dbConnString
   ekg <- runMonitoringServer
-  concurrently runUserAPI runSocketAPI
+  concurrently runSocketAPI runUserAPI
  where
   defaultUserAPIPort             = 8000
   defaultSocketAPIPort           = 5000

@@ -1,6 +1,6 @@
 poker-server.cabal
 *~
-.env
+*.env
 build
 dist
 dist-*
@@ -25,4 +25,3 @@ cabal.project.local~
 .HTF/
 .ghc.environment.*
 
-.prod.env
