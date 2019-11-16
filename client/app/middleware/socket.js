@@ -31,15 +31,15 @@ function addHandlers(socket, authToken, dispatch) {
     dispatch(disconnectSocket())
     // try and reconnect nearly instantly which is  
     // useful when the client has refreshed their web browser
-    setTimeout(() => {
-
-      if (socket.connect) {
-        socket.connect()
-      }
-      else {
-
-      }
-    }, 750);
+    //    setTimeout(() => {
+    //
+    //      if (socket.connect) {
+    //        socket.connect()
+    //      }
+    //      else {
+    //
+    //      }
+    //    }, 750);
 
   }
 
@@ -90,8 +90,9 @@ function connHandler(dispatch, action) {
   }
 
   if (action.data && connectedSocket) {
-    if (connectedSocket.readyState === 1)
-      connectedSocket.send(action.payload)
+    // if (connectedSocket.readyState === 1)
+    // connectedSocket.send(action.payload)
+    //}
   }
 }
 
