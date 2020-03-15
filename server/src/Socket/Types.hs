@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-
+{-# LANGUAGE TemplateHaskell #-}
 module Socket.Types where
 
 import           Control.Concurrent             ( MVar )
@@ -30,7 +30,8 @@ import           Types                          ( RedisConfig
                                                 , Username
                                                 )
 import           Pipes.Concurrent
-import System.Random
+import           System.Random
+import           Control.Lens
 
 
 data MsgHandlerConfig = MsgHandlerConfig

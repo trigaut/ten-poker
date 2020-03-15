@@ -1,5 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
-
+{-# LANGUAGE TemplateHaskell #-}
 module Socket.Table where
 import           Control.Concurrent      hiding ( yield )
 import           Control.Concurrent.Async
@@ -16,7 +16,7 @@ import           Database.Persist.Postgresql    ( ConnectionString
                                                 , withPostgresqlConn
                                                 )
 import           Types
-
+import           Control.Lens
 import           Control.Lens            hiding ( Fold )
 import           Poker.Types             hiding ( LeaveSeat )
 
@@ -54,20 +54,24 @@ import qualified Pipes.Prelude                 as P
 import           Poker.Game.Privacy
 
 
+data GameEnv = GameEnv
+  { _envConnStr :: ConnectionString
+  , _envServerState :: TVar ServerState
+  , _envTableName :: TableName
+  , _envGameOutMailbox :: Input Game
+  , _envGameInMailbox:: Output Game
+  }
+
+makeLenses ''GameEnv
 
 setUpTablePipes
   :: ConnectionString -> TVar ServerState -> TableName -> Table -> IO (Async ())
-setUpTablePipes connStr s name Table {..} = do
-  t <- dbGetTableEntity connStr name
-  let (Entity key _) = fromMaybe notFoundErr t
-  async $ forever $ runEffect $ gamePipeline connStr
-                                             s
-                                             key
-                                             name
-                                             gameOutMailbox
-                                             gameInMailbox
-  where notFoundErr = error $ "Table " <> show name <> " doesn't exist in DB"
-
+setUpTablePipes _envConnStr _envServerState _envTableName Table {..} = do
+  async $ forever $ runEffect $ gamePipeline GameEnv
+    { _envGameInMailbox  = gameInMailbox
+    , _envGameOutMailbox = gameOutMailbox
+    , ..
+    }
 
 -- this is the pipeline of effects we run everytime a new game state
 -- is placed in the tables
@@ -78,56 +82,47 @@ setUpTablePipes connStr s name Table {..} = do
 --
 -- Delays with "pause" at the end of each game stage (Flop, River etc) for UX
 -- are done client side.
-gamePipeline
-  :: ConnectionString
-  -> TVar ServerState
-  -> Key TableEntity
-  -> TableName
-  -> Input Game
-  -> Output Game
-  -> Effect IO ()
-gamePipeline connStr s key tableName outMailbox inMailbox = do
-  fromInput outMailbox
-    >-> broadcast s tableName
-    >-> logGame tableName
-    >-> updateTable s tableName
-    >-> writeGameToDB connStr key
+gamePipeline :: GameEnv -> Effect IO ()
+gamePipeline env = do
+  fromInput (env ^. envGameOutMailbox)
+    >-> broadcast env
+    >-> logGame env
+    >-> updateTable env
+    >-> writeGameToDB env
     >-> nextStagePause
-    >-> timePlayer s tableName
-    >-> progress inMailbox
+    >-> timePlayer env
+    >-> progress env
     -- should all be in stm monad not IO -- perhaps
 
 
 -- Delay to enhance UX based on game stages
-timePlayer :: TVar ServerState -> TableName -> Pipe Game Game IO ()
-timePlayer s tableName = do
+timePlayer :: GameEnv -> Pipe Game Game IO ()
+timePlayer GameEnv {..} = do
   g@Game {..} <- await
   let currPlyrToAct = ((!!) (getGamePlayerNames g)) <$> _currentPosToAct
-  liftIO $ forM_ currPlyrToAct $ runPlayerTimer s tableName g
+  liftIO $ forM_ currPlyrToAct $ runPlayerTimer _envServerState _envTableName g
   yield g
  where
-
-
--- We watch incoming game states. We compare the initial gamestates
--- with the game state when the timer ends.
--- If the state is still the same then we timeout the player to act
--- to force the progression of the game.
-runPlayerTimer
-  :: TVar ServerState -> TableName -> Game -> PlayerName -> IO (Async ())
-runPlayerTimer s tableName gameWhenTimerStarts plyrName = async $ do
-  threadDelay (3 * 1000000) -- 30 seconds
-  mbTable <- atomically $ getTable s tableName
-  case mbTable of
-    Nothing         -> return ()
-    Just Table {..} -> do
-      let gameHasNotProgressed = gameWhenTimerStarts == game
-          playerStillHasToAct  = doesPlayerHaveToAct plyrName game
-      when (gameHasNotProgressed && playerStillHasToAct)
-        $ case runPlayerAction game timeoutAction of
-            Left err -> print err
-            Right progressedGame ->
-              runEffect $ yield progressedGame >-> toOutput gameInMailbox
-  where timeoutAction = PlayerAction { name = plyrName, action = Timeout }
+  -- We watch incoming game states. We compare the initial gamestates
+  -- with the game state when the timer ends.
+  -- If the state is still the same then we timeout the player to act
+  -- to force the progression of the game.
+  runPlayerTimer
+    :: TVar ServerState -> TableName -> Game -> PlayerName -> IO (Async ())
+  runPlayerTimer s tableName gameWhenTimerStarts plyrName = async $ do
+    threadDelay $ 3 * 1000000 -- 30 seconds
+    mbTable <- atomically $ getTable s tableName
+    case mbTable of
+      Nothing         -> return ()
+      Just Table {..} -> do
+        let gameHasNotProgressed = gameWhenTimerStarts == game
+            playerStillHasToAct  = doesPlayerHaveToAct plyrName game
+        when (gameHasNotProgressed && playerStillHasToAct)
+          $ case runPlayerAction game timeoutAction of
+              Left err -> print err
+              Right progressedGame ->
+                runEffect $ yield progressedGame >-> toOutput gameInMailbox
+    where timeoutAction = PlayerAction { name = plyrName, action = Timeout }
 
 
 -- Delay to enhance UX so game doesn't move through stages
@@ -149,20 +144,20 @@ nextStagePause = do
 
 -- Progresses to the next state which awaits a player action.
 --
---- If the next game state is one where no player action is possible 
+--- If the next game state is one where no player action is possible
 --  then we need to recursively progress the game.
 
 --  These such states are:
 --
 --  1. everyone is all in.
---  1. All but one player has folded or the game. 
+--  1. All but one player has folded or the game.
 --  3. Game is in the Showdown stage.
 --
--- After each progression the new game state is sent to the table 
--- mailbox. This sends the new game state through the pipeline that 
+-- After each progression the new game state is sent to the table
+-- mailbox. This sends the new game state through the pipeline that
 -- the previous game state just went through.
-progress :: Output Game -> Consumer Game IO ()
-progress inMailbox = do
+progress :: GameEnv -> Consumer Game IO ()
+progress GameEnv {..} = do
   g <- await
   liftIO $ print "can progress game in pipe?"
   liftIO $ print $ (canProgressGame g)
@@ -172,15 +167,19 @@ progress inMailbox = do
     gen <- liftIO getStdGen
     liftIO $ setStdGen $ snd $ next gen
     liftIO $ print "PIPE PROGRESSING GAME"
-    runEffect $ yield (progressGame gen game) >-> toOutput inMailbox
+    runEffect $ yield (progressGame gen game) >-> toOutput _envGameInMailbox
 
 
-writeGameToDB :: ConnectionString -> Key TableEntity -> Pipe Game Game IO ()
-writeGameToDB connStr tableKey = do
-  g <- await
-  _ <- liftIO $ async $ dbInsertGame connStr tableKey g
-  yield g
-
+writeGameToDB :: GameEnv -> Pipe Game Game IO ()
+writeGameToDB GameEnv {..} = do
+  t <- liftIO $ dbGetTableEntity _envConnStr _envTableName
+  let (Entity tableKey _) = fromMaybe notFoundErr t
+  game <- await
+  _    <- liftIO $ async $ dbInsertGame _envConnStr tableKey game
+  yield game
+ where
+  notFoundErr =
+    error $ "Table " <> show _envTableName <> " doesn't exist in DB"
 
 -- write MsgOuts for new game states to outgoing mailbox for
 -- client's who are observing the table
@@ -193,18 +192,18 @@ informSubscriber n g Client {..} = do
 
 -- sends new game states to subscribers
 -- At the moment all clients receive updates from every game indiscriminately
-broadcast :: TVar ServerState -> TableName -> Pipe Game Game IO ()
-broadcast s n = do
-  g                <- await
-  ServerState {..} <- liftIO $ readTVarIO s
+broadcast :: GameEnv -> Pipe Game Game IO ()
+broadcast GameEnv {..} = do
+  game             <- await
+  ServerState {..} <- liftIO $ readTVarIO _envServerState
   let usernames' = M.keys clients -- usernames to broadcast to
-  liftIO $ async $ mapM_ (informSubscriber n g) clients
-  yield g
+  liftIO $ async $ mapM_ (informSubscriber _envTableName game) clients
+  yield game
 
-logGame :: TableName -> Pipe Game Game IO ()
-logGame tableName = do
-  g <- await
-  yield g
+logGame :: GameEnv -> Pipe Game Game IO ()
+logGame GameEnv {..} = do
+  game <- await
+  yield game
 
 -- Lookups up a table with the given name and writes the new game state
 -- to the gameIn mailbox for propagation to observers.
@@ -231,11 +230,11 @@ getTable s tableName = do
   ServerState {..} <- readTVar s
   return $ M.lookup tableName $ unLobby lobby
 
-updateTable :: TVar ServerState -> TableName -> Pipe Game Game IO ()
-updateTable serverStateTVar tableName = do
-  g <- await
-  liftIO $ atomically $ updateTable' serverStateTVar tableName g
-  yield g
+updateTable :: GameEnv -> Pipe Game Game IO ()
+updateTable GameEnv {..} = do
+  game <- await
+  liftIO $ atomically $ updateTable' _envServerState _envTableName game
+  yield game
 
 updateTable' :: TVar ServerState -> TableName -> Game -> STM ()
 updateTable' serverStateTVar tableName newGame = do
