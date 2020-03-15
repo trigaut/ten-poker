@@ -132,6 +132,7 @@ data TableSummary = TableSummary
   , _bigBlind :: Int
   } deriving (Show, Eq, Generic, FromJSON, ToJSON)
 
+
 -- outgoing messages for clients
 data MsgOut
   = TableList [TableSummary]
@@ -170,3 +171,5 @@ data Err
   deriving (Show, Eq, Generic, FromJSON, ToJSON)
 
 newtype Token = Token Text -- JWT
+
+

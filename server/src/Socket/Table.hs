@@ -46,6 +46,7 @@ import           Pipes.Aeson
 import           Pipes                   hiding ( next )
 import           Pipes.Core                     ( push )
 import           Pipes.Concurrent
+import           Pipes.Lift                     ( runReaderP )
 import           Pipes.Parse             hiding ( decode
                                                 , encode
                                                 , next
@@ -64,6 +65,8 @@ data GameEnv = GameEnv
 
 makeLenses ''GameEnv
 
+type GamePipeline a = Pipe Game Game (ReaderT GameEnv IO) a
+
 setUpTablePipes
   :: ConnectionString -> TVar ServerState -> TableName -> Table -> IO (Async ())
 setUpTablePipes _envConnStr _envServerState _envTableName Table {..} = do
@@ -78,13 +81,14 @@ setUpTablePipes _envConnStr _envServerState _envTableName Table {..} = do
 -- incoming mailbox for new game states.
 --
 -- New game states are send to the table's incoming mailbox every time a player acts
--- in a way that follows the game rules 
+-- in a way that follows the game rules
 --
 -- Delays with "pause" at the end of each game stage (Flop, River etc) for UX
 -- are done client side.
 gamePipeline :: GameEnv -> Effect IO ()
-gamePipeline env = do
-  fromInput (env ^. envGameOutMailbox)
+gamePipeline env =
+  do
+      gameProducer
     >-> broadcast env
     >-> logGame env
     >-> updateTable env
@@ -92,8 +96,7 @@ gamePipeline env = do
     >-> nextStagePause
     >-> timePlayer env
     >-> progress env
-    -- should all be in stm monad not IO -- perhaps
-
+  where gameProducer = runReaderP env $ fromInput (env ^. envGameOutMailbox)
 
 -- Delay to enhance UX based on game stages
 timePlayer :: GameEnv -> Pipe Game Game IO ()

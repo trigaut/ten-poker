@@ -1,7 +1,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveAnyClass #-}
-
+{-# LANGUAGE TemplateHaskell #-}
 module Types where
 
 import           Data.Aeson
