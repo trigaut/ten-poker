@@ -1,5 +1,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Socket.Table where
 import           Control.Concurrent      hiding ( yield )
 import           Control.Concurrent.Async
@@ -46,7 +48,7 @@ import           Pipes.Aeson
 import           Pipes                   hiding ( next )
 import           Pipes.Core                     ( push )
 import           Pipes.Concurrent
-import           Pipes.Lift                     ( runReaderP )
+import           Pipes.Lift
 import           Pipes.Parse             hiding ( decode
                                                 , encode
                                                 , next
@@ -55,54 +57,68 @@ import qualified Pipes.Prelude                 as P
 import           Poker.Game.Privacy
 
 
+newtype AICount = AICount Int deriving (Show, Eq)
+
 data GameEnv = GameEnv
   { _envConnStr :: ConnectionString
   , _envServerState :: TVar ServerState
   , _envTableName :: TableName
   , _envGameOutMailbox :: Input Game
   , _envGameInMailbox:: Output Game
+  , _envAICount :: AICount
   }
 
 makeLenses ''GameEnv
 
 type GamePipeline a = Pipe Game Game (ReaderT GameEnv IO) a
 
+type PokerGame = ReaderT GameEnv IO
+-- newtype PokerGame a = PokerGame { runPokerAction :: ReaderT GameEnv IO a }
+ -- deriving (Monad, Functor, Applicative)
+
+
+-- New game states are send to the table's incoming mailbox every time a player acts
+-- in a way that follows the game rules. These new game states are then processed
+-- in our game pipeline.
 setUpTablePipes
   :: ConnectionString -> TVar ServerState -> TableName -> Table -> IO (Async ())
 setUpTablePipes _envConnStr _envServerState _envTableName Table {..} = do
-  async $ forever $ runEffect $ gamePipeline GameEnv
+  async
+    $   forever
+    $   runEffect
+    $   runReaderP env
+    $   gameProducer
+    >-> gamePipeline
+    >-> progress
+ where
+  env = GameEnv
     { _envGameInMailbox  = gameInMailbox
     , _envGameOutMailbox = gameOutMailbox
+    , _envAICount        = AICount 2
     , ..
     }
+  gameProducer = fromInput gameOutMailbox
+
 
 -- this is the pipeline of effects we run everytime a new game state
 -- is placed in the tables
 -- incoming mailbox for new game states.
---
--- New game states are send to the table's incoming mailbox every time a player acts
--- in a way that follows the game rules
---
--- Delays with "pause" at the end of each game stage (Flop, River etc) for UX
--- are done client side.
-gamePipeline :: GameEnv -> Effect IO ()
-gamePipeline env =
-  do
-      gameProducer
-    >-> broadcast env
-    >-> logGame env
-    >-> updateTable env
-    >-> writeGameToDB env
+gamePipeline :: Pipe Game Game PokerGame ()
+gamePipeline = do
+  broadcast
+    >-> logGame
+    >-> updateTable
+    >-> writeGameToDB
     >-> nextStagePause
-    >-> timePlayer env
-    >-> progress env
-  where gameProducer = runReaderP env $ fromInput (env ^. envGameOutMailbox)
+    >-> timePlayer
+
 
 -- Delay to enhance UX based on game stages
-timePlayer :: GameEnv -> Pipe Game Game IO ()
-timePlayer GameEnv {..} = do
-  g@Game {..} <- await
-  let currPlyrToAct = ((!!) (getGamePlayerNames g)) <$> _currentPosToAct
+timePlayer :: Pipe Game Game PokerGame ()
+timePlayer = do
+  GameEnv {..} <- ask
+  g@Game {..}  <- await
+  let currPlyrToAct = (!!) (getGamePlayerNames g) <$> _currentPosToAct
   liftIO $ forM_ currPlyrToAct $ runPlayerTimer _envServerState _envTableName g
   yield g
  where
@@ -130,7 +146,7 @@ timePlayer GameEnv {..} = do
 
 -- Delay to enhance UX so game doesn't move through stages
 -- instantly when no players can act i.e everyone all in.
-nextStagePause :: Pipe Game Game IO ()
+nextStagePause :: Pipe Game Game PokerGame ()
 nextStagePause = do
   g <- await
   when (canProgressGame g) $ liftIO $ threadDelay $ pauseDuration g
@@ -159,30 +175,31 @@ nextStagePause = do
 -- After each progression the new game state is sent to the table
 -- mailbox. This sends the new game state through the pipeline that
 -- the previous game state just went through.
-progress :: GameEnv -> Consumer Game IO ()
-progress GameEnv {..} = do
-  g <- await
+progress :: Consumer Game PokerGame ()
+progress = do
+  GameEnv {..} <- ask
+  g            <- await
   liftIO $ print "can progress game in pipe?"
   liftIO $ print $ (canProgressGame g)
-  when (canProgressGame g) (progress' g)
+  when (canProgressGame g) (progress' g _envGameInMailbox)
  where
-  progress' game = do
+  progress' game gInMailbox = do
     gen <- liftIO getStdGen
     liftIO $ setStdGen $ snd $ next gen
     liftIO $ print "PIPE PROGRESSING GAME"
-    runEffect $ yield (progressGame gen game) >-> toOutput _envGameInMailbox
+    runEffect $ yield (progressGame gen game) >-> toOutput gInMailbox
 
 
-writeGameToDB :: GameEnv -> Pipe Game Game IO ()
-writeGameToDB GameEnv {..} = do
-  t <- liftIO $ dbGetTableEntity _envConnStr _envTableName
-  let (Entity tableKey _) = fromMaybe notFoundErr t
+writeGameToDB :: Pipe Game Game PokerGame ()
+writeGameToDB = do
+  GameEnv {..} <- ask
+  table        <- liftIO $ dbGetTableEntity _envConnStr _envTableName
+  let (Entity tableKey _) = fromMaybe (notFoundErr _envTableName) table
   game <- await
   _    <- liftIO $ async $ dbInsertGame _envConnStr tableKey game
   yield game
  where
-  notFoundErr =
-    error $ "Table " <> show _envTableName <> " doesn't exist in DB"
+  notFoundErr name = error $ "Table " <> show name <> " doesn't exist in DB"
 
 -- write MsgOuts for new game states to outgoing mailbox for
 -- client's who are observing the table
@@ -193,18 +210,20 @@ informSubscriber n g Client {..} = do
   runEffect $ yield (NewGameState n filteredGame) >-> toOutput outgoingMailbox
   return ()
 
+
 -- sends new game states to subscribers
 -- At the moment all clients receive updates from every game indiscriminately
-broadcast :: GameEnv -> Pipe Game Game IO ()
-broadcast GameEnv {..} = do
+broadcast :: Pipe Game Game PokerGame ()
+broadcast = do
+  GameEnv {..}     <- ask
   game             <- await
   ServerState {..} <- liftIO $ readTVarIO _envServerState
   let usernames' = M.keys clients -- usernames to broadcast to
   liftIO $ async $ mapM_ (informSubscriber _envTableName game) clients
   yield game
 
-logGame :: GameEnv -> Pipe Game Game IO ()
-logGame GameEnv {..} = do
+logGame :: Pipe Game Game PokerGame ()
+logGame = do
   game <- await
   yield game
 
@@ -233,9 +252,10 @@ getTable s tableName = do
   ServerState {..} <- readTVar s
   return $ M.lookup tableName $ unLobby lobby
 
-updateTable :: GameEnv -> Pipe Game Game IO ()
-updateTable GameEnv {..} = do
-  game <- await
+updateTable :: Pipe Game Game PokerGame ()
+updateTable = do
+  GameEnv {..} <- ask
+  game         <- await
   liftIO $ atomically $ updateTable' _envServerState _envTableName game
   yield game
 
