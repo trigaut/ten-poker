@@ -1,7 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 module Socket.Table where
 import           Control.Concurrent      hiding ( yield )
 import           Control.Concurrent.Async
@@ -9,40 +7,27 @@ import           Control.Concurrent.STM
 import qualified Data.Map.Lazy                 as M
 import           Database.Persist.Postgresql
 import qualified Network.WebSockets            as WS
-import           Prelude
 
-import           Database.Persist
-import           Database.Persist.Postgresql    ( ConnectionString
-                                                , SqlPersistT
-                                                , runMigration
-                                                , withPostgresqlConn
-                                                )
+import           Database.Persist.Postgresql    ( ConnectionString )
 import           Types
-import           Control.Lens
 import           Control.Lens            hiding ( Fold )
 import           Poker.Types             hiding ( LeaveSeat )
 
-import qualified Data.ByteString.Lazy.Char8    as C
 import           Control.Monad.Except
 import           Control.Monad.Reader
 
-
 import           System.Random
-import qualified Data.Map.Lazy                 as M
-
 import           Poker.Game.Blinds
+import           Poker.Game.Privacy
 import           Poker.Game.Game
 import           Poker.Types                    ( Player )
 import           Data.Maybe
 import           Poker.Game.Utils
 import           Socket.Types
 import           Socket.Utils
-import           System.Random
 import           Poker.Poker
-import           Data.ByteString.UTF8           ( fromString )
 
 import           Database
-import           Schema
 
 import           Pipes.Aeson
 import           Pipes                   hiding ( next )
@@ -54,7 +39,8 @@ import           Pipes.Parse             hiding ( decode
                                                 , next
                                                 )
 import qualified Pipes.Prelude                 as P
-import           Poker.Game.Privacy
+
+import           Prelude
 
 
 newtype AICount = AICount Int deriving (Show, Eq)
@@ -70,11 +56,7 @@ data GameEnv = GameEnv
 
 makeLenses ''GameEnv
 
-type GamePipeline a = Pipe Game Game (ReaderT GameEnv IO) a
-
-type PokerGame = ReaderT GameEnv IO
--- newtype PokerGame a = PokerGame { runPokerAction :: ReaderT GameEnv IO a }
- -- deriving (Monad, Functor, Applicative)
+type GamePipe a = Pipe Game Game (ReaderT GameEnv IO) a
 
 
 -- New game states are send to the table's incoming mailbox every time a player acts
@@ -103,7 +85,7 @@ setUpTablePipes _envConnStr _envServerState _envTableName Table {..} = do
 -- this is the pipeline of effects we run everytime a new game state
 -- is placed in the tables
 -- incoming mailbox for new game states.
-gamePipeline :: Pipe Game Game PokerGame ()
+gamePipeline :: Pipe Game Game (ReaderT GameEnv IO) ()
 gamePipeline = do
   broadcast
     >-> logGame
@@ -113,8 +95,7 @@ gamePipeline = do
     >-> timePlayer
 
 
--- Delay to enhance UX based on game stages
-timePlayer :: Pipe Game Game PokerGame ()
+timePlayer :: Pipe Game Game (ReaderT GameEnv IO) ()
 timePlayer = do
   GameEnv {..} <- ask
   g@Game {..}  <- await
@@ -144,9 +125,8 @@ timePlayer = do
     where timeoutAction = PlayerAction { name = plyrName, action = Timeout }
 
 
--- Delay to enhance UX so game doesn't move through stages
--- instantly when no players can act i.e everyone all in.
-nextStagePause :: Pipe Game Game PokerGame ()
+-- Delay between game stages so users don't just see a quick flurry of game states
+nextStagePause :: Pipe Game Game (ReaderT GameEnv IO) ()
 nextStagePause = do
   g <- await
   when (canProgressGame g) $ liftIO $ threadDelay $ pauseDuration g
@@ -175,7 +155,7 @@ nextStagePause = do
 -- After each progression the new game state is sent to the table
 -- mailbox. This sends the new game state through the pipeline that
 -- the previous game state just went through.
-progress :: Consumer Game PokerGame ()
+progress :: Consumer Game (ReaderT GameEnv IO) ()
 progress = do
   GameEnv {..} <- ask
   g            <- await
@@ -190,7 +170,7 @@ progress = do
     runEffect $ yield (progressGame gen game) >-> toOutput gInMailbox
 
 
-writeGameToDB :: Pipe Game Game PokerGame ()
+writeGameToDB :: Pipe Game Game (ReaderT GameEnv IO) ()
 writeGameToDB = do
   GameEnv {..} <- ask
   table        <- liftIO $ dbGetTableEntity _envConnStr _envTableName
@@ -213,7 +193,7 @@ informSubscriber n g Client {..} = do
 
 -- sends new game states to subscribers
 -- At the moment all clients receive updates from every game indiscriminately
-broadcast :: Pipe Game Game PokerGame ()
+broadcast :: Pipe Game Game (ReaderT GameEnv IO) ()
 broadcast = do
   GameEnv {..}     <- ask
   game             <- await
@@ -222,7 +202,7 @@ broadcast = do
   liftIO $ async $ mapM_ (informSubscriber _envTableName game) clients
   yield game
 
-logGame :: Pipe Game Game PokerGame ()
+logGame :: Pipe Game Game (ReaderT GameEnv IO) ()
 logGame = do
   game <- await
   yield game
@@ -252,7 +232,7 @@ getTable s tableName = do
   ServerState {..} <- readTVar s
   return $ M.lookup tableName $ unLobby lobby
 
-updateTable :: Pipe Game Game PokerGame ()
+updateTable :: Pipe Game Game (ReaderT GameEnv IO) ()
 updateTable = do
   GameEnv {..} <- ask
   game         <- await
