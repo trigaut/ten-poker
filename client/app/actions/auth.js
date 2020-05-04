@@ -22,7 +22,7 @@ export const logoutUser = history => dispatch => {
 
 console.log('env var', process.env)
 
-const AUTH_API_URL =
+const AUTH_API_URL = 
   process.env.NODE_ENV === 'docker'
     ? 'http://192.168.99.100:8000'
     : process.env.NODE_ENV === 'production'

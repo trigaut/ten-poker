@@ -22,7 +22,7 @@ services:
     volumes:
       - redis-data:/var/lib/redis
   
-  server:
+  backserver:
     build: ./server 
     environment:
      - dbConnStr=host=db port=5432 user=postgres dbname=postgres password=postgres
@@ -37,7 +37,6 @@ services:
     restart: on-failure
     networks:
      - backend
-
   client:
     build: ./client
     restart: on-failure
@@ -48,9 +47,24 @@ services:
         published: 3000
         protocol: tcp
         mode: host
+    networks:
+     - frontend
+  reverse-proxy:
+    container_name: "haproxy"
+    build: ./haproxy
+    ports:
+      - "8001:80"
+    networks:
+     - frontend
+     - backend
+    depends_on:
+      - db
+      - redis
+      - backserver
 
 networks:
   backend:
+  frontend:
 
 volumes:
   db-data:
